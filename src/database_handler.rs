@@ -1,4 +1,9 @@
-use rusqlite::{params, Connection, Result};
+use std::ptr::null;
+
+use rusqlite::{params, Connection, Result, Error};
+
+use crate::wt_types::{self, C_Set, C_Sets};
+
 
 #[derive(Debug)]
 pub struct User {
@@ -31,7 +36,6 @@ pub struct WorkoutExercise {
     pub id: u32,
     pub workout_id: u32,
     pub exercise_id: u32,
-    pub notes: Option<String>,
 }
 
 #[derive(Debug)]
@@ -41,8 +45,6 @@ pub struct Set {
     pub set_number: u32,
     pub weight: f64,
     pub reps: u32,
-    pub rpe: Option<f64>,
-    pub notes: Option<String>,
 }
 
 pub struct DatabaseHandler {
@@ -84,37 +86,6 @@ impl DatabaseHandler {
         Ok(exercise_id)
     }
 
-    pub fn add_workout(
-        &self,
-        user_id: u32,
-        name: Option<&str>,
-        exercises: Vec<(u32, Vec<(f64, u32, Option<f64>, Option<&str>)>)>,
-        notes: Option<&str>,
-    ) -> Result<u32> {
-        let start_time = chrono::Local::now().to_rfc3339();
-        self.conn.execute(
-            "INSERT INTO workouts (user_id, name, start_time, notes) VALUES (?1, ?2, ?3, ?4)",
-            params![user_id, name, start_time, notes],
-        )?;
-        let workout_id = self.conn.last_insert_rowid() as u32;
-
-        for (exercise_id, sets) in exercises {
-            self.conn.execute(
-                "INSERT INTO workout_exercises (workout_id, exercise_id) VALUES (?1, ?2)",
-                params![workout_id, exercise_id],
-            )?;
-            let workout_exercise_id = self.conn.last_insert_rowid() as u32;
-
-            for (set_number, (weight, reps, rpe, notes)) in sets.into_iter().enumerate() {
-                self.conn.execute(
-                    "INSERT INTO sets (workout_exercise_id, set_number, weight, reps, rpe, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![workout_exercise_id, set_number as u32 + 1, weight, reps, rpe, notes],
-                )?;
-            }
-        }
-
-        Ok(workout_id)
-    }
 
     pub fn get_user_exercises(&self, user_id: u32) -> Result<Vec<Exercise>> {
         let mut stmt = self.conn.prepare(
@@ -135,5 +106,80 @@ impl DatabaseHandler {
             exercises.push(exercise?);
         }
         Ok(exercises)
+    }
+
+    pub fn is_valid_user(&self, user_id: u32) -> Result<u32> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM users WHERE id = ?1"
+        )?;
+
+        let mut rows = stmt.query(params![user_id])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(user_id)
+        } else {
+            Err(Error::QueryReturnedNoRows)
+        }
+    }
+
+    pub fn new_workout(&self, user_id: u32) -> Result<Workout> {
+        println!("HERE 3");
+
+        self.conn.execute(
+            "INSERT INTO workouts (user_id) VALUES (?1)",
+            params![user_id],
+        )?;
+        let workout_id = self.conn.last_insert_rowid() as u32;
+        
+        Ok(Workout {
+            id: workout_id,
+            user_id,
+            name: None,
+            start_time: "".to_string(),
+            end_time: None,
+            notes: None
+        })
+    }
+
+    pub fn save_sets(&self, user_id: u32, sets: Vec<C_Set>) -> Result<u32> {
+        println!("HERE 1");
+
+        let db_sets: Vec<Set> = sets.iter().map(|x| -> Set {
+            let db_set = Set {
+                id: 0,
+                workout_exercise_id: x.workout_exercise_id,
+                set_number: x.set_number,
+                weight: x.weight,
+                reps: x.reps,
+            };
+            db_set
+        }).collect();
+
+
+
+        let workout = self.new_workout(user_id)?;
+        println!("HERE 4");
+
+
+        for db_set in &db_sets {
+            let e = self.conn.execute(
+                "INSERT INTO sets (workout_exercise_id, set_number, weight, reps) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    db_set.workout_exercise_id,
+                    db_set.set_number,
+                    db_set.weight,
+                    db_set.reps,
+                ],
+            );
+
+            match e {
+                Ok(_) => {},
+                Err(err) => {println!("Error: {}", err)},
+            }
+        }
+
+        println!("HERE 2");
+
+        Ok(db_sets.len().try_into().unwrap())
     }
 }
